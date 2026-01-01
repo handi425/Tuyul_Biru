@@ -55,6 +55,13 @@ input double   InpLotIncrement     = 0.01;          // Martingale Lot Increment
 input int      InpGridStep         = 200;           // Default Grid Step (points)
 input int      InpGridLayers       = 5;             // Grid Layers Count
 
+input group "=== Plan Mode Settings ==="
+input int      InpPlanSLPoints     = 1000;          // Plan SL (Points)
+input double   InpPlanRewardRatio  = 2.0;           // Plan Reward Ratio (Risk:Reward)
+input int      InpPlanMultiStep    = 550;           // Plan Multi-Layer Step (Points)
+input double   InpPlanBE_TriggerPct = 50.0;         // Plan BE Trigger (% dari TP)
+input double   InpPlanBE_LockPct   = 25.0;          // Plan BE Lock Profit (%)
+
 input group "=== Risk & Management ==="
 input ENUM_SLTP_MODE InpSLTPMode = SLTP_MODE_AUTO_ATR_SNR; // SL/TP Mode
 input int      InpFixedSL          = 500;           // Fixed SL (Points)
@@ -242,6 +249,25 @@ string ObjBtnApplyTP = "BtnApplyTP";
 string ObjBtnReset = "BtnReset";
 string ObjBtnBE = "BtnBE";
 
+// Plan Mode Objects
+string ObjPlanEntry = "Plan_Line_Entry";
+string ObjPlanSL    = "Plan_Line_SL";
+string ObjPlanTP    = "Plan_Line_TP";
+string ObjPlanShadowPrefix = "Plan_Shadow_";
+double lastPlanEntryPrice = 0;
+
+// Plan Info Panel Objects
+string ObjPlanInfoBG = "PlanInfoBG";
+string ObjPlanInfoTitle = "PlanInfoTitle";
+string ObjPlanInfoType = "PlanInfoType";
+string ObjPlanInfoEntry = "PlanInfoEntry";
+string ObjPlanInfoSL = "PlanInfoSL";
+string ObjPlanInfoTP = "PlanInfoTP";
+string ObjPlanInfoRisk = "PlanInfoRisk";
+string ObjPlanInfoProfit = "PlanInfoProfit";
+string ObjPlanInfoRR = "PlanInfoRR";
+string ObjPlanInfoPips = "PlanInfoPips";
+
 //+------------------------------------------------------------------+
 //| NEWS DATA STRUCTURES                                              |
 //+------------------------------------------------------------------+
@@ -418,6 +444,10 @@ void OnDeinit(const int reason)
    ObjectsDeleteAll(0, "DIV_");
    ObjectsDeleteAll(0, "DIVLBL_");
    
+   // Cleanup Plan Mode objects
+   DeletePlanLines();
+   DeletePlanInfoPanel();
+   
    ChartRedraw();
 }
 
@@ -545,6 +575,12 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
       else if(sparam == "BtnSellGrid") { PlaySound("ok.wav"); OpenGridOrders(ORDER_TYPE_SELL, false); }
       else if(sparam == "BtnSellMart") { PlaySound("ok.wav"); OpenGridOrders(ORDER_TYPE_SELL, true); }
       
+      // Plan Mode Buttons
+      else if(sparam == "BtnPlanBuy") { PlaySound("tick.wav"); TogglePlan("BUY"); }
+      else if(sparam == "BtnPlanSell") { PlaySound("tick.wav"); TogglePlan("SELL"); }
+      else if(sparam == "BtnExecute") { PlaySound("ok.wav"); ExecutePlan(); }
+      else if(sparam == "BtnExecuteMulti") { PlaySound("ok.wav"); ExecutePlanMulti(); }
+      
       // Close Buttons
       else if(sparam == "BtnCloseAll") { PlaySound("alert.wav"); CloseAllPositions(); }
       else if(sparam == "BtnCloseBuy") { PlaySound("alert.wav"); ClosePositionsByType(POSITION_TYPE_BUY); }
@@ -585,6 +621,7 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
          if(newLot >= MinLot && newLot <= MaxLot)
             CurrentLot = NormalizeDouble(newLot, 2);
          UpdateLotDisplay();
+         UpdatePlanLabels();  // Update Plan info if active
       }
       else if(sparam == ObjGridEdit)
       {
@@ -593,6 +630,28 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
          if(newGridPips >= 1 && newGridPips <= 1000)
             CurrentGridStep = newGridPips * 10; // Convert Pips to Points (assuming 1 pip = 10 pts)
          UpdateGridDisplay();
+      }
+   }
+   
+   // Handle Object Drag (for Plan lines)
+   if(id == CHARTEVENT_OBJECT_DRAG)
+   {
+      if(sparam == ObjPlanEntry)
+      {
+         double newEntryPrice = ObjectGetDouble(0, ObjPlanEntry, OBJPROP_PRICE);
+         double delta = newEntryPrice - lastPlanEntryPrice;
+         double currentSL = ObjectGetDouble(0, ObjPlanSL, OBJPROP_PRICE);
+         double currentTP = ObjectGetDouble(0, ObjPlanTP, OBJPROP_PRICE);
+         
+         ObjectSetDouble(0, ObjPlanSL, OBJPROP_PRICE, currentSL + delta);
+         ObjectSetDouble(0, ObjPlanTP, OBJPROP_PRICE, currentTP + delta);
+         lastPlanEntryPrice = newEntryPrice;
+      }
+      
+      if(sparam == ObjPlanEntry || sparam == ObjPlanSL || sparam == ObjPlanTP)
+      {
+         UpdatePlanLabels();
+         ChartRedraw();
       }
    }
 }
@@ -632,6 +691,13 @@ void CreatePanel()
    // Row 4: Single Entry
    CreateButton("BtnBuy1x", "BUY 1x", 0, row, clrDodgerBlue);
    CreateButton("BtnSell1x", "SELL 1x", 1, row, clrOrangeRed);
+   row++;  
+   
+   // Row 5: Plan Mode Entry
+   CreateButton("BtnPlanBuy", "PLAN BUY", 0, row, clrDarkGreen);
+   CreateButton("BtnPlanSell", "PLAN SELL", 1, row, clrDarkRed);
+   row++;
+   
    
    // --- RIGHT COLUMN (Controls & Advanced) ---
    // Reset row counter for Right Side? No, use explicit rows or offset.
@@ -656,11 +722,15 @@ void CreatePanel()
    CreateButton(ObjBtnPartialLoss, "Partial Loss", 3, row, clrSienna);
    row++;
    
-   // Row 3: LOT & GRID CONTROL (Above advanced buttons)
-   CreateLotGridControl(row);
+   // Row 3: Plan Execute Buttons
+   CreateButton("BtnExecute", "SINGLE", 2, row, clrPurple);
+   CreateButton("BtnExecuteMulti", "MULTI", 3, row, clrDarkViolet);
+   
+   // Row 4: LOT & GRID CONTROL (Above advanced buttons)
+   CreateLotGridControl(row+1);
    
    // Watermark
-   CreateWatermark(row + 3); 
+   CreateWatermark(row + 5);  // Adjusted for new rows
 }
 
 //+------------------------------------------------------------------+
@@ -668,7 +738,7 @@ void CreatePanel()
 //+------------------------------------------------------------------+
 void CreateSignalPanel()
 {
-   double signalRow = 7;  // Above buttons
+   double signalRow = 8;  // Above buttons
    
    // Base Y position (Top of the signal area)
    int topY = panelY + (int)(signalRow * gapY) + 30; 
@@ -984,7 +1054,7 @@ void CreateWatermark(int row)
       ObjectCreate(0, ObjWatermark, OBJ_LABEL, 0, 0, 0);
       ObjectSetInteger(0, ObjWatermark, OBJPROP_CORNER, CORNER_LEFT_LOWER);
       ObjectSetInteger(0, ObjWatermark, OBJPROP_XDISTANCE, panelX);
-      ObjectSetInteger(0, ObjWatermark, OBJPROP_YDISTANCE, panelY + ((row + 3) * gapY));
+      ObjectSetInteger(0, ObjWatermark, OBJPROP_YDISTANCE, panelY + ((row + 2) * gapY));
       ObjectSetString(0, ObjWatermark, OBJPROP_TEXT, "◆ TUYUL BIRU v2.0 ◆");
       ObjectSetInteger(0, ObjWatermark, OBJPROP_FONTSIZE, 10);
       ObjectSetString(0, ObjWatermark, OBJPROP_FONT, "Segoe UI Semibold");
@@ -2670,7 +2740,7 @@ void UpdateSignalDisplay(int signal)
    
    // Update or create main signal label (on panel)
    int sigX = panelX + 230;
-   int sigY = panelY + (int)(7.5 * gapY) + 15;  // Position in signal panel
+   int sigY = panelY + (int)(7.5 * gapY) + 55;  // Position in signal panel
    
    if(ObjectFind(0, ObjMainSignal) < 0)
    {
@@ -3112,7 +3182,7 @@ void CreateNewsPanel()
    int maxNewsItems = 8;
    int newsRowHeight = 18;
    int panelHeight = 30 + (maxNewsItems * newsRowHeight);
-   int panelYPos = panelY + (int)(12 * gapY) + 100;  // Above signal panel
+   int panelYPos = panelY + (int)(12 * gapY) + 120;  // Above signal panel
    
    // === SHADOW ===
    string objShadow = "NewsBG_Shadow";
@@ -3405,4 +3475,474 @@ void SetupChartAppearance()
    ChartRedraw(chartId);
    
    Print("Chart appearance configured: Black background, Green/Red candles, No grid/history/period");
+}
+
+//+------------------------------------------------------------------+
+//| PLAN MODE FUNCTIONS                                               |
+//+------------------------------------------------------------------+
+
+//+------------------------------------------------------------------+
+//| Toggle Plan Lines (Create or Delete)                              |
+//+------------------------------------------------------------------+
+void TogglePlan(string type)
+{
+   bool exists = (ObjectFind(0, ObjPlanEntry) >= 0);
+   if(exists)
+   {
+      long entryColor = ObjectGetInteger(0, ObjPlanEntry, OBJPROP_COLOR);
+      string currentType = (entryColor == clrBlue) ? "BUY" : "SELL";
+      DeletePlanLines();
+      if(currentType == type) return;  // Toggle off if same type
+   }
+   CreatePlanLines(type);
+}
+
+//+------------------------------------------------------------------+
+//| Create Plan Lines (Entry, SL, TP)                                  |
+//+------------------------------------------------------------------+
+void CreatePlanLines(string type)
+{
+   double price = (type == "BUY") ? SymbolInfoDouble(_Symbol, SYMBOL_ASK) : SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+   
+   DeletePlanLines();  // Clean up any existing plan
+   
+   double slPrice = (type == "BUY") ? 
+                    price - (InpPlanSLPoints * point) : 
+                    price + (InpPlanSLPoints * point);
+   
+   double tpPrice = (type == "BUY") ? 
+                    price + ((InpPlanSLPoints * InpPlanRewardRatio) * point) : 
+                    price - ((InpPlanSLPoints * InpPlanRewardRatio) * point);
+   
+   color entryColor = (type == "BUY") ? clrBlue : clrRed;
+   
+   lastPlanEntryPrice = price;
+   
+   CreatePlanHLine(ObjPlanEntry, price, entryColor, STYLE_DASH, "PLAN ENTRY");
+   CreatePlanHLine(ObjPlanSL, slPrice, clrRed, STYLE_SOLID, "PLAN SL");
+   CreatePlanHLine(ObjPlanTP, tpPrice, clrGreen, STYLE_SOLID, "PLAN TP");
+   
+   // Create shadow lines for multi-layer preview
+   CreatePlanShadowLines(price, type);
+   
+   UpdatePlanLabels();
+   ChartRedraw();
+}
+
+//+------------------------------------------------------------------+
+//| Create Horizontal Line for Plan                                   |
+//+------------------------------------------------------------------+
+void CreatePlanHLine(string name, double price, color col, ENUM_LINE_STYLE style, string desc)
+{
+   if(ObjectCreate(0, name, OBJ_HLINE, 0, 0, price))
+   {
+      ObjectSetInteger(0, name, OBJPROP_COLOR, col);
+      ObjectSetInteger(0, name, OBJPROP_STYLE, style);
+      ObjectSetInteger(0, name, OBJPROP_WIDTH, 2);
+      ObjectSetInteger(0, name, OBJPROP_SELECTABLE, true);
+      ObjectSetInteger(0, name, OBJPROP_SELECTED, true);
+      ObjectSetString(0, name, OBJPROP_TEXT, desc);
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Create Shadow Lines for Multi-Layer Preview                       |
+//+------------------------------------------------------------------+
+void CreatePlanShadowLines(double baseEntry, string type)
+{
+   double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+   color shadowColor = (type == "BUY") ? clrDodgerBlue : clrOrangeRed;
+   
+   // Create shadow line for each layer (starting from layer 2)
+   for(int i = 1; i < InpGridLayers; i++)
+   {
+      double shadowPrice = 0;
+      
+      if(type == "BUY")
+         shadowPrice = baseEntry - (i * InpPlanMultiStep * point);  // Buy: layers below
+      else
+         shadowPrice = baseEntry + (i * InpPlanMultiStep * point);  // Sell: layers above
+      
+      shadowPrice = NormalizeDouble(shadowPrice, _Digits);
+      
+      string shadowName = ObjPlanShadowPrefix + IntegerToString(i);
+      string shadowText = StringFormat("Layer %d @ %.5f", i+1, shadowPrice);
+      
+      CreatePlanShadowLine(shadowName, shadowPrice, shadowColor, shadowText);
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Create Single Shadow Line                                         |
+//+------------------------------------------------------------------+
+void CreatePlanShadowLine(string name, double price, color col, string desc)
+{
+   if(ObjectCreate(0, name, OBJ_HLINE, 0, 0, price))
+   {
+      ObjectSetInteger(0, name, OBJPROP_COLOR, col);
+      ObjectSetInteger(0, name, OBJPROP_STYLE, STYLE_DOT);
+      ObjectSetInteger(0, name, OBJPROP_WIDTH, 1);
+      ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
+      ObjectSetInteger(0, name, OBJPROP_SELECTED, false);
+      ObjectSetInteger(0, name, OBJPROP_BACK, true);  // Behind chart
+      ObjectSetString(0, name, OBJPROP_TEXT, desc);
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Update Shadow Lines Position                                      |
+//+------------------------------------------------------------------+
+void UpdatePlanShadowLines(double baseEntry, string type)
+{
+   double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+   
+   for(int i = 1; i < InpGridLayers; i++)
+   {
+      double shadowPrice = 0;
+      
+      if(type == "BUY")
+         shadowPrice = baseEntry - (i * InpPlanMultiStep * point);
+      else
+         shadowPrice = baseEntry + (i * InpPlanMultiStep * point);
+      
+      shadowPrice = NormalizeDouble(shadowPrice, _Digits);
+      
+      string shadowName = ObjPlanShadowPrefix + IntegerToString(i);
+      string shadowText = StringFormat("Layer %d @ %.5f", i+1, shadowPrice);
+      
+      if(ObjectFind(0, shadowName) >= 0)
+      {
+         ObjectSetDouble(0, shadowName, OBJPROP_PRICE, shadowPrice);
+         ObjectSetString(0, shadowName, OBJPROP_TEXT, shadowText);
+      }
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Delete Plan Lines and Panel                                       |
+//+------------------------------------------------------------------+
+void DeletePlanLines()
+{
+   ObjectDelete(0, ObjPlanEntry);
+   ObjectDelete(0, ObjPlanSL);
+   ObjectDelete(0, ObjPlanTP);
+   
+   // Delete all shadow lines
+   DeletePlanShadowLines();
+   DeletePlanInfoPanel();
+   
+   ChartRedraw();
+}
+
+//+------------------------------------------------------------------+
+//| Delete Shadow Lines                                               |
+//+------------------------------------------------------------------+
+void DeletePlanShadowLines()
+{
+   for(int i = 1; i <= 20; i++)  // Max 20 layers
+   {
+      string shadowName = ObjPlanShadowPrefix + IntegerToString(i);
+      if(ObjectFind(0, shadowName) >= 0)
+         ObjectDelete(0, shadowName);
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Create Plan Info Panel                                            |
+//+------------------------------------------------------------------+
+void CreatePlanInfoPanel()
+{
+   int panelXPos = 10;
+   int panelYPos = 35;
+   int panelW = 200;
+   int panelH = 180;
+   int lineH = 18;
+   
+   // Background Panel
+   if(ObjectFind(0, ObjPlanInfoBG) < 0)
+   {
+      ObjectCreate(0, ObjPlanInfoBG, OBJ_RECTANGLE_LABEL, 0, 0, 0);
+      ObjectSetInteger(0, ObjPlanInfoBG, OBJPROP_CORNER, CORNER_RIGHT_LOWER);
+      ObjectSetInteger(0, ObjPlanInfoBG, OBJPROP_XDISTANCE, panelXPos);
+      ObjectSetInteger(0, ObjPlanInfoBG, OBJPROP_YDISTANCE, panelYPos + panelH);
+      ObjectSetInteger(0, ObjPlanInfoBG, OBJPROP_XSIZE, panelW);
+      ObjectSetInteger(0, ObjPlanInfoBG, OBJPROP_YSIZE, panelH);
+      ObjectSetInteger(0, ObjPlanInfoBG, OBJPROP_BGCOLOR, C'20,20,30');
+      ObjectSetInteger(0, ObjPlanInfoBG, OBJPROP_BORDER_TYPE, BORDER_FLAT);
+      ObjectSetInteger(0, ObjPlanInfoBG, OBJPROP_BORDER_COLOR, clrDimGray);
+      ObjectSetInteger(0, ObjPlanInfoBG, OBJPROP_BACK, false);
+   }
+   
+   int yOffset = panelYPos + panelH - 10;
+   
+   // Title
+   CreatePlanInfoLabel(ObjPlanInfoTitle, panelXPos, yOffset, "═══ PLAN INFO ═══", clrGold, 10, "Arial Bold");
+   yOffset -= lineH + 5;
+   
+   // Type
+   CreatePlanInfoLabel(ObjPlanInfoType, panelXPos, yOffset, "Type: ---", clrWhite, 9, "Consolas");
+   yOffset -= lineH;
+   
+   // Entry
+   CreatePlanInfoLabel(ObjPlanInfoEntry, panelXPos, yOffset, "Entry: ---", clrWhite, 9, "Consolas");
+   yOffset -= lineH;
+   
+   // SL
+   CreatePlanInfoLabel(ObjPlanInfoSL, panelXPos, yOffset, "SL: ---", clrCoral, 9, "Consolas");
+   yOffset -= lineH;
+   
+   // TP
+   CreatePlanInfoLabel(ObjPlanInfoTP, panelXPos, yOffset, "TP: ---", clrLime, 9, "Consolas");
+   yOffset -= lineH + 5;
+   
+   // Risk (Loss)
+   CreatePlanInfoLabel(ObjPlanInfoRisk, panelXPos, yOffset, "Risk: $0.00", clrOrangeRed, 10, "Arial Bold");
+   yOffset -= lineH;
+   
+   // Profit
+   CreatePlanInfoLabel(ObjPlanInfoProfit, panelXPos, yOffset, "Profit: $0.00", clrLimeGreen, 10, "Arial Bold");
+   yOffset -= lineH;
+   
+   // RR Ratio
+   CreatePlanInfoLabel(ObjPlanInfoRR, panelXPos, yOffset, "R:R = 1:0.00", clrCyan, 10, "Arial Bold");
+   yOffset -= lineH;
+   
+   // Pips Info
+   CreatePlanInfoLabel(ObjPlanInfoPips, panelXPos, yOffset, "SL: 0 pts | TP: 0 pts", clrSilver, 8, "Arial");
+}
+
+//+------------------------------------------------------------------+
+//| Create Plan Info Label                                            |
+//+------------------------------------------------------------------+
+void CreatePlanInfoLabel(string name, int x, int y, string text, color clr, int fontSize, string font)
+{
+   if(ObjectFind(0, name) < 0)
+   {
+      ObjectCreate(0, name, OBJ_LABEL, 0, 0, 0);
+      ObjectSetInteger(0, name, OBJPROP_CORNER, CORNER_RIGHT_LOWER);
+      ObjectSetInteger(0, name, OBJPROP_XDISTANCE, x);
+      ObjectSetInteger(0, name, OBJPROP_YDISTANCE, y);
+      ObjectSetInteger(0, name, OBJPROP_ANCHOR, ANCHOR_RIGHT_LOWER);
+   }
+   ObjectSetString(0, name, OBJPROP_TEXT, text);
+   ObjectSetInteger(0, name, OBJPROP_COLOR, clr);
+   ObjectSetInteger(0, name, OBJPROP_FONTSIZE, fontSize);
+   ObjectSetString(0, name, OBJPROP_FONT, font);
+}
+
+//+------------------------------------------------------------------+
+//| Update Plan Info Panel with current values                        |
+//+------------------------------------------------------------------+
+void UpdatePlanInfoPanel(string typeStr, double entry, double sl, double tp, 
+                          double profit, double loss, double slPips, double tpPips, double rr)
+{
+   // Create panel if not exists
+   if(ObjectFind(0, ObjPlanInfoBG) < 0)
+      CreatePlanInfoPanel();
+   
+   color typeColor = (typeStr == "BUY") ? clrDodgerBlue : clrOrangeRed;
+   
+   // Update all labels
+   ObjectSetString(0, ObjPlanInfoType, OBJPROP_TEXT, StringFormat("Type: %s  |  Lot: %.2f", typeStr, CurrentLot));
+   ObjectSetInteger(0, ObjPlanInfoType, OBJPROP_COLOR, typeColor);
+   
+   ObjectSetString(0, ObjPlanInfoEntry, OBJPROP_TEXT, StringFormat("Entry: %.5f", entry));
+   ObjectSetString(0, ObjPlanInfoSL, OBJPROP_TEXT, StringFormat("SL: %.5f", sl));
+   ObjectSetString(0, ObjPlanInfoTP, OBJPROP_TEXT, StringFormat("TP: %.5f", tp));
+   
+   ObjectSetString(0, ObjPlanInfoRisk, OBJPROP_TEXT, StringFormat("▼ Risk: -$%.2f", MathAbs(loss)));
+   ObjectSetString(0, ObjPlanInfoProfit, OBJPROP_TEXT, StringFormat("▲ Profit: +$%.2f", profit));
+   ObjectSetString(0, ObjPlanInfoRR, OBJPROP_TEXT, StringFormat("R:R = 1 : %.2f", rr));
+   ObjectSetString(0, ObjPlanInfoPips, OBJPROP_TEXT, StringFormat("SL: %.0f pts | TP: %.0f pts", slPips, tpPips));
+   
+   ChartRedraw();
+}
+
+//+------------------------------------------------------------------+
+//| Delete Plan Info Panel                                            |
+//+------------------------------------------------------------------+
+void DeletePlanInfoPanel()
+{
+   ObjectDelete(0, ObjPlanInfoBG);
+   ObjectDelete(0, ObjPlanInfoTitle);
+   ObjectDelete(0, ObjPlanInfoType);
+   ObjectDelete(0, ObjPlanInfoEntry);
+   ObjectDelete(0, ObjPlanInfoSL);
+   ObjectDelete(0, ObjPlanInfoTP);
+   ObjectDelete(0, ObjPlanInfoRisk);
+   ObjectDelete(0, ObjPlanInfoProfit);
+   ObjectDelete(0, ObjPlanInfoRR);
+   ObjectDelete(0, ObjPlanInfoPips);
+   ChartRedraw();
+}
+
+//+------------------------------------------------------------------+
+//| Update Plan Labels and Info Panel                                 |
+//+------------------------------------------------------------------+
+void UpdatePlanLabels()
+{
+   if(ObjectFind(0, ObjPlanEntry) < 0)
+   {
+      DeletePlanInfoPanel();
+      return;
+   }
+   
+   double entry = ObjectGetDouble(0, ObjPlanEntry, OBJPROP_PRICE);
+   double sl    = ObjectGetDouble(0, ObjPlanSL, OBJPROP_PRICE);
+   double tp    = ObjectGetDouble(0, ObjPlanTP, OBJPROP_PRICE);
+   double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+   
+   ENUM_ORDER_TYPE type = (sl < entry) ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
+   string typeStr = (type == ORDER_TYPE_BUY) ? "BUY" : "SELL";
+   
+   // Calculate profit and loss
+   double profitVal = 0, lossVal = 0;
+   if(!OrderCalcProfit(type, _Symbol, CurrentLot, entry, tp, profitVal)) profitVal = 0;
+   if(!OrderCalcProfit(type, _Symbol, CurrentLot, entry, sl, lossVal)) lossVal = 0;
+   
+   // Calculate pips
+   double slPips = MathAbs(entry - sl) / point;
+   double tpPips = MathAbs(tp - entry) / point;
+   double rrRatio = (lossVal != 0) ? MathAbs(profitVal / lossVal) : 0;
+   
+   // Update text on lines
+   ObjectSetString(0, ObjPlanTP, OBJPROP_TEXT, StringFormat("TP: +$%.2f (%.0f pts)", profitVal, tpPips));
+   ObjectSetString(0, ObjPlanSL, OBJPROP_TEXT, StringFormat("SL: -$%.2f (%.0f pts)", MathAbs(lossVal), slPips));
+   ObjectSetString(0, ObjPlanEntry, OBJPROP_TEXT, StringFormat("PLAN %s @ %.5f", typeStr, entry));
+   
+   // Update shadow lines when plan is dragged
+   UpdatePlanShadowLines(entry, typeStr);
+   
+   // Update Info Panel
+   UpdatePlanInfoPanel(typeStr, entry, sl, tp, profitVal, lossVal, slPips, tpPips, rrRatio);
+}
+
+//+------------------------------------------------------------------+
+//| Execute Plan - Single Order                                       |
+//+------------------------------------------------------------------+
+void ExecutePlan()
+{
+   if(ObjectFind(0, ObjPlanEntry) < 0)
+   {
+      Alert("Tidak ada plan aktif. Klik PLAN BUY atau PLAN SELL terlebih dahulu.");
+      return;
+   }
+   
+   double entryPrice = NormalizeDouble(ObjectGetDouble(0, ObjPlanEntry, OBJPROP_PRICE), _Digits);
+   double slPrice    = NormalizeDouble(ObjectGetDouble(0, ObjPlanSL, OBJPROP_PRICE), _Digits);
+   double tpPrice    = NormalizeDouble(ObjectGetDouble(0, ObjPlanTP, OBJPROP_PRICE), _Digits);
+   
+   bool isBuy = (slPrice < entryPrice);
+   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   double pt  = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+   double stopsLevel = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL) * pt;
+   
+   bool res = false;
+   string comment = "TUYUL Plan";
+   
+   if(isBuy)
+   {
+      if(entryPrice > ask + stopsLevel)
+         res = trade.BuyStop(CurrentLot, entryPrice, _Symbol, slPrice, tpPrice, ORDER_TIME_GTC, 0, comment);
+      else if(entryPrice < bid - stopsLevel)
+         res = trade.BuyLimit(CurrentLot, entryPrice, _Symbol, slPrice, tpPrice, ORDER_TIME_GTC, 0, comment);
+      else
+         res = trade.Buy(CurrentLot, _Symbol, ask, slPrice, tpPrice, comment);
+   }
+   else
+   {
+      if(entryPrice < bid - stopsLevel)
+         res = trade.SellStop(CurrentLot, entryPrice, _Symbol, slPrice, tpPrice, ORDER_TIME_GTC, 0, comment);
+      else if(entryPrice > ask + stopsLevel)
+         res = trade.SellLimit(CurrentLot, entryPrice, _Symbol, slPrice, tpPrice, ORDER_TIME_GTC, 0, comment);
+      else
+         res = trade.Sell(CurrentLot, _Symbol, bid, slPrice, tpPrice, comment);
+   }
+   
+   if(res)
+   {
+      DeletePlanLines();
+      Print("Plan executed successfully: ", (isBuy ? "BUY" : "SELL"), " @ ", entryPrice);
+   }
+   else
+   {
+      Alert("Eksekusi Gagal! ", trade.ResultRetcodeDescription());
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Execute Plan - Multi Layer                                        |
+//+------------------------------------------------------------------+
+void ExecutePlanMulti()
+{
+   if(ObjectFind(0, ObjPlanEntry) < 0)
+   {
+      Alert("Tidak ada plan aktif. Klik PLAN BUY atau PLAN SELL terlebih dahulu.");
+      return;
+   }
+   
+   // Get data from Plan lines
+   double baseEntry = NormalizeDouble(ObjectGetDouble(0, ObjPlanEntry, OBJPROP_PRICE), _Digits);
+   double fixedSL   = NormalizeDouble(ObjectGetDouble(0, ObjPlanSL, OBJPROP_PRICE), _Digits);
+   double fixedTP   = NormalizeDouble(ObjectGetDouble(0, ObjPlanTP, OBJPROP_PRICE), _Digits);
+   
+   bool isBuyPlan = (fixedSL < baseEntry);
+   double pt = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+   double stopsLevel = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL) * pt;
+   
+   int successCount = 0;
+   
+   // Loop for each layer
+   for(int i = 0; i < InpGridLayers; i++)
+   {
+      double entryPrice = 0;
+      
+      // Calculate entry price for layer i
+      if(isBuyPlan)
+         entryPrice = baseEntry - (i * InpPlanMultiStep * pt);  // Buy: price goes down
+      else
+         entryPrice = baseEntry + (i * InpPlanMultiStep * pt);  // Sell: price goes up
+         
+      entryPrice = NormalizeDouble(entryPrice, _Digits);
+      
+      // Get current prices
+      double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+      double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+      
+      bool res = false;
+      string comment = StringFormat("TUYUL Plan L%d", i+1);
+      
+      if(isBuyPlan)
+      {
+         if(entryPrice > ask + stopsLevel)
+            res = trade.BuyStop(CurrentLot, entryPrice, _Symbol, fixedSL, fixedTP, ORDER_TIME_GTC, 0, comment);
+         else if(entryPrice < bid - stopsLevel)
+            res = trade.BuyLimit(CurrentLot, entryPrice, _Symbol, fixedSL, fixedTP, ORDER_TIME_GTC, 0, comment);
+         else
+            res = trade.Buy(CurrentLot, _Symbol, ask, fixedSL, fixedTP, comment);
+      }
+      else
+      {
+         if(entryPrice < bid - stopsLevel)
+            res = trade.SellStop(CurrentLot, entryPrice, _Symbol, fixedSL, fixedTP, ORDER_TIME_GTC, 0, comment);
+         else if(entryPrice > ask + stopsLevel)
+            res = trade.SellLimit(CurrentLot, entryPrice, _Symbol, fixedSL, fixedTP, ORDER_TIME_GTC, 0, comment);
+         else
+            res = trade.Sell(CurrentLot, _Symbol, bid, fixedSL, fixedTP, comment);
+      }
+      
+      if(res) 
+         successCount++;
+      else
+         Print("Gagal entry layer ", i+1, ": ", trade.ResultRetcodeDescription());
+      
+      Sleep(100);  // Small delay to avoid server spam
+   }
+   
+   // Delete plan lines after all orders are placed
+   DeletePlanLines();
+   Print("Plan Multi executed: ", successCount, "/", InpGridLayers, " layers placed successfully");
+   PlaySound("ok.wav");
 }
