@@ -30,6 +30,7 @@
 **TUYUL BIRU V2.0** adalah Expert Advisor (EA) untuk MetaTrader 5 yang menyediakan panel trading manual dengan fitur-fitur canggih:
 
 - 🖥️ **Panel Trading Manual** - Tombol Buy/Sell dengan opsi Grid dan Martingale
+- 🎯 **Plan Mode** - Visual trading dengan draggable Entry/SL/TP lines dan Risk/Reward info
 - 📊 **Multi-Timeframe Signals** - Monitor RSI, SnR, dan Divergence di 5 timeframe (M15, M30, H1, H4, D1)
 - 📈 **Trend MA Visualization** - Garis MA dengan warna dinamis berdasarkan trend
 - 📡 **Signal Generator** - Scoring system untuk menghasilkan sinyal Buy/Sell
@@ -83,6 +84,8 @@
 | `InpLotIncrement` | double | 0.01 | Increment lot untuk martingale |
 | `InpGridStep` | int | 200 | Jarak grid default (points) |
 | `InpGridLayers` | int | 5 | Jumlah layer grid |
+
+> **Catatan:** Plan Mode menggunakan `InpFixedSL` dan `InpFixedTP` dari Risk & Management, serta `CurrentLot` dan `CurrentGridStep` dari panel kontrol.
 
 ### 🛡️ Risk & Management
 
@@ -287,6 +290,30 @@ Panel sinyal HTF menampilkan data dari 5 timeframe dalam bentuk tabel:
 - **Lot Control:** [-] [Edit Box] [+] - Adjust lot size dengan step sesuai broker
 - **Grid Control:** [-] [Edit Box] [+] pips - Adjust grid step (dalam Pips, dikonversi ke Points)
 
+### Plan Mode Buttons
+
+| Button | Fungsi |
+|--------|--------|
+| 🟢 **PLAN BUY** | Membuat garis plan untuk Buy order dengan Entry, SL, TP yang dapat di-drag |
+| 🔴 **PLAN SELL** | Membuat garis plan untuk Sell order dengan Entry, SL, TP yang dapat di-drag |
+| 🟣 **SINGLE** | Eksekusi plan sebagai satu order (market/pending berdasarkan posisi entry) |
+| 🟪 **MULTI** | Eksekusi plan sebagai multi-layer orders dengan jarak sesuai setting |
+
+### Plan Info Panel
+
+Panel di pojok kanan bawah menampilkan informasi real-time:
+
+| Field | Deskripsi |
+|-------|-----------|
+| Type | BUY/SELL dan lot size |
+| Entry | Harga entry yang direncanakan |
+| SL | Stop Loss price |
+| TP | Take Profit price |
+| Risk | Potensi kerugian dalam USD |
+| Profit | Potensi keuntungan dalam USD |
+| R:R | Risk to Reward ratio |
+| Pips | Jarak SL dan TP dalam points |
+
 ---
 
 ## 💹 Trading Functions
@@ -336,6 +363,44 @@ Set break even untuk posisi profit:
 - `CloseAllPositions()` - Close semua posisi symbol
 - `ClosePositionsByType()` - Close by position type
 - `DeleteAllPendingOrders()` - Delete semua pending
+
+### Plan Mode Functions
+
+#### TogglePlan()
+
+Toggle on/off Plan lines:
+
+- Jika plan aktif dengan tipe sama, hapus plan
+- Jika plan aktif dengan tipe berbeda, ganti ke tipe baru
+- Jika tidak ada plan, buat plan baru
+
+#### CreatePlanLines()
+
+Membuat garis horizontal untuk planning:
+
+- **Entry Line** - Garis biru (BUY) atau merah (SELL), dapat di-drag
+- **SL Line** - Garis merah solid (jarak: `InpFixedSL` points)
+- **TP Line** - Garis hijau solid (jarak: `InpFixedTP` points)
+- **Shadow Lines** - Preview layer untuk multi-layer (jarak: `CurrentGridStep`)
+
+#### ExecutePlan()
+
+Eksekusi plan sebagai single order:
+
+- Jika entry price > ask + stops level → BuyStop/SellLimit
+- Jika entry price < bid - stops level → BuyLimit/SellStop
+- Jika entry dekat harga saat ini → Market order
+- SL dan TP sudah termasuk dalam order
+
+#### ExecutePlanMulti()
+
+Eksekusi plan sebagai multi-layer orders:
+
+- Layer 1: Entry dari garis plan
+- Layer 2+: Entry dengan jarak `CurrentGridStep` (dari panel kontrol)
+- Semua layer menggunakan SL dan TP yang sama
+- Jumlah layer sesuai `InpGridLayers`
+- Lot size: `CurrentLot` (dari panel kontrol)
 
 ---
 
@@ -583,6 +648,26 @@ Alert popup untuk berita High Impact:
 | `AdjustGrid()` | Adjust grid by pips |
 | `SetupChartAppearance()` | Configure chart colors/appearance |
 
+### Plan Mode Functions
+
+| Function | Deskripsi |
+|----------|-----------|
+| `TogglePlan()` | Toggle plan lines on/off |
+| `CreatePlanLines()` | Create Entry, SL, TP lines |
+| `CreatePlanHLine()` | Helper: Create horizontal line |
+| `CreatePlanShadowLines()` | Create multi-layer preview lines |
+| `CreatePlanShadowLine()` | Helper: Create single shadow line |
+| `UpdatePlanShadowLines()` | Update shadow positions on drag |
+| `DeletePlanLines()` | Delete all plan objects |
+| `DeletePlanShadowLines()` | Delete shadow lines |
+| `CreatePlanInfoPanel()` | Create info panel background |
+| `CreatePlanInfoLabel()` | Helper: Create panel label |
+| `UpdatePlanInfoPanel()` | Update panel with current values |
+| `DeletePlanInfoPanel()` | Delete info panel objects |
+| `UpdatePlanLabels()` | Update line texts and panel |
+| `ExecutePlan()` | Execute single order from plan |
+| `ExecutePlanMulti()` | Execute multi-layer orders |
+
 ---
 
 ## 📄 License
@@ -601,6 +686,6 @@ For support and inquiries, please contact the developer.
 
 **◆ TUYUL BIRU V2.0 Documentation ◆**
 
-*Generated: 2026-01-01 | Total Lines: 3408 | File Size: ~126KB*
+*Generated: 2026-01-01 | Total Lines: 3947 | File Size: ~145KB*
 
 </div>
